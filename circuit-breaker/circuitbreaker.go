@@ -16,6 +16,9 @@ type CircuitBreaker struct {
 	halfOpenCalls   int // Track permitted calls in half-open state
 	lastFailureTime time.Time
 	requests        *list.List
+
+	failureCount  int
+	slowCallCount int
 }
 
 func NewCircuitBreaker(config Config) *CircuitBreaker {
@@ -129,15 +132,14 @@ func (cb *CircuitBreaker) addRequest(failed, slow bool) {
 	// Remove old requests based on the configured strategy
 	cb.cleanupOldRequests()
 
-	// Remove the oldest request if the window size exceeds the limit
-	if cb.requests.Len() >= cb.config.SlidingWindowSize {
-		if front := cb.requests.Front(); front != nil {
-			cb.requests.Remove(front)
-		}
-	}
-
 	// Store boolean failure status in the sliding window
 	cb.requests.PushBack(requestEntry{failed: failed, slow: slow, executionTime: time.Now()})
+
+	if failed {
+		cb.failureCount++
+	} else if slow {
+		cb.slowCallCount++
+	}
 }
 
 // cleanupOldRequests removes outdated requests based on the sliding window strategy
@@ -154,7 +156,7 @@ func (cb *CircuitBreaker) cleanupOldRequests() {
 func (cb *CircuitBreaker) enforceCountBasedWindow() {
 	for cb.requests.Len() >= cb.config.SlidingWindowSize {
 		if front := cb.requests.Front(); front != nil {
-			cb.requests.Remove(front)
+			cb.removeFrontRequest()
 		}
 	}
 }
@@ -174,36 +176,39 @@ func (cb *CircuitBreaker) enforceTimeBasedWindow() {
 			break // Stop removing when the first valid entry is found
 		}
 
+		cb.removeFrontRequest()
+	}
+}
+
+// removeFrontRequest removes the front request and updates counters
+func (cb *CircuitBreaker) removeFrontRequest() {
+	front := cb.requests.Front()
+	if front != nil {
+		entry := front.Value.(requestEntry)
+
+		// Decrement counters accordingly
+		if entry.failed {
+			cb.failureCount--
+		} else if entry.slow {
+			cb.slowCallCount--
+		}
+
 		cb.requests.Remove(front)
 	}
 }
 
-// getFailureRate calculates the failure percentage
+// getFailureRate returns the failure percentage in O(1) time
 func (cb *CircuitBreaker) getFailureRate() float64 {
 	if cb.requests.Len() == 0 {
 		return 0.0
 	}
-	failures := 0
-	for e := cb.requests.Front(); e != nil; e = e.Next() {
-		if e.Value.(requestEntry).failed {
-			failures++
-		}
-	}
-	return (float64(failures) / float64(cb.requests.Len())) * 100
+	return (float64(cb.failureCount) / float64(cb.requests.Len())) * 100
 }
 
-// getSlowCallRate calculates the slow call percentage
+// getSlowCallRate returns the slow call percentage in O(1) time
 func (cb *CircuitBreaker) getSlowCallRate() float64 {
 	if cb.requests.Len() == 0 {
 		return 0.0
 	}
-	slowCalls := 0
-	for e := cb.requests.Front(); e != nil; e = e.Next() {
-		entry := e.Value.(requestEntry)
-		//failed calls are not considered slow, as they are already counted in getFailureRate
-		if entry.slow && !entry.failed {
-			slowCalls++
-		}
-	}
-	return (float64(slowCalls) / float64(cb.requests.Len())) * 100
+	return (float64(cb.slowCallCount) / float64(cb.requests.Len())) * 100
 }
