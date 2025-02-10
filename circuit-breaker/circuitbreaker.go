@@ -5,20 +5,21 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type CircuitBreaker struct {
 	config Config
 	state  *CircuitBreakerState
-	mu     sync.Mutex
+	mu     sync.RWMutex
 
-	halfOpenCalls   int // Track permitted calls in half-open state
+	halfOpenCalls   int32 // Track permitted calls in half-open state
 	lastFailureTime time.Time
 	requests        *list.List
 
-	failureCount  int
-	slowCallCount int
+	failureCount  int32
+	slowCallCount int32
 }
 
 func NewCircuitBreaker(config Config) *CircuitBreaker {
@@ -36,35 +37,45 @@ type requestEntry struct {
 	executionTime time.Time
 }
 
+// Transition to HALF-OPEN state when cooldown expires
+func (cb *CircuitBreaker) transitionToHalfOpen() {
+
+	if cb.state.IsOpen() && time.Since(cb.lastFailureTime) >= cb.config.WaitDurationInOpenState {
+		log.Printf("%s: moving state to HALF-OPEN", cb.config.Name)
+		cb.state.SetState(HalfOpen)
+		atomic.StoreInt32(&cb.halfOpenCalls, 0)
+	}
+}
+
 func (cb *CircuitBreaker) Execute(action func() error) error {
-	cb.mu.Lock()
+	cb.mu.RLock()
 
 	if cb.state == nil {
-		cb.mu.Unlock()
+		cb.mu.RUnlock()
 		return errors.New("circuit breaker state is not initialized")
 	}
 
 	// transition from Open → Half-Open if cooling time has passed
 	if cb.state.IsOpen() && time.Since(cb.lastFailureTime) >= cb.config.WaitDurationInOpenState {
 		log.Printf("%s: moving state to half-open", cb.config.Name)
-		cb.state.SetState(HalfOpen)
-		cb.halfOpenCalls = 0 // Reset allowed calls
+		//cb.mu.RUnlock()
+		cb.transitionToHalfOpen()
 	}
 
 	if cb.state.IsOpen() {
-		cb.mu.Unlock()
+		cb.mu.RUnlock()
 		return errors.New(cb.config.Name + " :circuit breaker is in opened state")
 	}
 
 	if cb.state.IsHalfOpen() {
 		if cb.halfOpenCalls >= cb.config.PermittedNumberOfCallsInHalfOpenState {
-			cb.mu.Unlock()
+			cb.mu.RUnlock()
 			return errors.New(cb.config.Name + " :circuit breaker half-open, no more calls allowed")
 		}
-		cb.halfOpenCalls++ // Count half-open calls
+		atomic.AddInt32(&cb.halfOpenCalls, 1) // Count half-open calls
 	}
 
-	cb.mu.Unlock()
+	cb.mu.RUnlock()
 
 	start := time.Now()
 	err := action()
@@ -124,6 +135,7 @@ func (cb *CircuitBreaker) recordResult(err error, isSlow bool) {
 
 // addRequest tracks recent failures in a sliding window
 func (cb *CircuitBreaker) addRequest(failed, slow bool) {
+
 	// Ensure cb.requests is initialized
 	if cb.requests == nil {
 		cb.requests = list.New()
@@ -136,9 +148,9 @@ func (cb *CircuitBreaker) addRequest(failed, slow bool) {
 	cb.requests.PushBack(requestEntry{failed: failed, slow: slow, executionTime: time.Now()})
 
 	if failed {
-		cb.failureCount++
+		atomic.AddInt32(&cb.failureCount, 1)
 	} else if slow {
-		cb.slowCallCount++
+		atomic.AddInt32(&cb.slowCallCount, 1)
 	}
 }
 
@@ -188,9 +200,9 @@ func (cb *CircuitBreaker) removeFrontRequest() {
 
 		// Decrement counters accordingly
 		if entry.failed {
-			cb.failureCount--
+			atomic.AddInt32(&cb.failureCount, -1)
 		} else if entry.slow {
-			cb.slowCallCount--
+			atomic.AddInt32(&cb.slowCallCount, -1)
 		}
 
 		cb.requests.Remove(front)
@@ -199,6 +211,7 @@ func (cb *CircuitBreaker) removeFrontRequest() {
 
 // getFailureRate returns the failure percentage in O(1) time
 func (cb *CircuitBreaker) getFailureRate() float64 {
+
 	if cb.requests.Len() == 0 {
 		return 0.0
 	}
@@ -207,6 +220,7 @@ func (cb *CircuitBreaker) getFailureRate() float64 {
 
 // getSlowCallRate returns the slow call percentage in O(1) time
 func (cb *CircuitBreaker) getSlowCallRate() float64 {
+
 	if cb.requests.Len() == 0 {
 		return 0.0
 	}

@@ -15,7 +15,7 @@ type Config struct {
 	Name                                  string
 	FailureRateThreshold                  float64
 	MinimumNumberOfCalls                  int
-	PermittedNumberOfCallsInHalfOpenState int
+	PermittedNumberOfCallsInHalfOpenState int32
 	WaitDurationInOpenState               time.Duration
 	SlidingWindowSize                     int           // int for COUNT_BASED,
 	SlidingWindowTime                     time.Duration //time window for TIME_BASED
