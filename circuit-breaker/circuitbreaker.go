@@ -28,8 +28,9 @@ func NewCircuitBreaker(config Config) *CircuitBreaker {
 
 // requestEntry stores whether a call was a failure or slow
 type requestEntry struct {
-	failed bool
-	slow   bool
+	failed        bool
+	slow          bool
+	executionTime time.Time
 }
 
 func (cb *CircuitBreaker) Execute(action func() error) error {
@@ -125,6 +126,9 @@ func (cb *CircuitBreaker) addRequest(failed, slow bool) {
 		cb.requests = list.New()
 	}
 
+	// Remove old requests based on the configured strategy
+	cb.cleanupOldRequests()
+
 	// Remove the oldest request if the window size exceeds the limit
 	if cb.requests.Len() >= cb.config.SlidingWindowSize {
 		if front := cb.requests.Front(); front != nil {
@@ -133,7 +137,45 @@ func (cb *CircuitBreaker) addRequest(failed, slow bool) {
 	}
 
 	// Store boolean failure status in the sliding window
-	cb.requests.PushBack(requestEntry{failed: failed, slow: slow})
+	cb.requests.PushBack(requestEntry{failed: failed, slow: slow, executionTime: time.Now()})
+}
+
+// cleanupOldRequests removes outdated requests based on the sliding window strategy
+func (cb *CircuitBreaker) cleanupOldRequests() {
+	switch cb.config.SlidingWindowType {
+	case COUNT_BASED:
+		cb.enforceCountBasedWindow()
+	case TIME_BASED:
+		cb.enforceTimeBasedWindow()
+	}
+}
+
+// enforceCountBasedWindow removes oldest entries if count exceeds SlidingWindowSize
+func (cb *CircuitBreaker) enforceCountBasedWindow() {
+	for cb.requests.Len() >= cb.config.SlidingWindowSize {
+		if front := cb.requests.Front(); front != nil {
+			cb.requests.Remove(front)
+		}
+	}
+}
+
+// enforceTimeBasedWindow removes entries older than SlidingWindowTime
+func (cb *CircuitBreaker) enforceTimeBasedWindow() {
+	expirationTime := time.Now().Add(-time.Duration(cb.config.SlidingWindowSize))
+
+	for cb.requests.Len() > 0 {
+		front := cb.requests.Front()
+		if front == nil {
+			break
+		}
+
+		entry := front.Value.(requestEntry)
+		if !entry.executionTime.Before(expirationTime) {
+			break // Stop removing when the first valid entry is found
+		}
+
+		cb.requests.Remove(front)
+	}
 }
 
 // getFailureRate calculates the failure percentage
