@@ -29,7 +29,7 @@ func NewCircuitBreaker(config Config) *CircuitBreaker {
 	}
 }
 
-// requestEntry stores whether a call was a failure or slow
+// requestEntry stores whether a call was a failure or slow and execution time
 type requestEntry struct {
 	failed        bool
 	slow          bool
@@ -163,7 +163,7 @@ func (cb *CircuitBreaker) enforceCountBasedWindow() {
 
 // enforceTimeBasedWindow removes entries older than SlidingWindowTime
 func (cb *CircuitBreaker) enforceTimeBasedWindow() {
-	expirationTime := time.Now().Add(-time.Duration(cb.config.SlidingWindowSize))
+	expirationTime := time.Now().Add(-cb.config.SlidingWindowTime)
 
 	for cb.requests.Len() > 0 {
 		front := cb.requests.Front()

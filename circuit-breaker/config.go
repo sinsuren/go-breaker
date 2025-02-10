@@ -17,7 +17,8 @@ type Config struct {
 	MinimumNumberOfCalls                  int
 	PermittedNumberOfCallsInHalfOpenState int
 	WaitDurationInOpenState               time.Duration
-	SlidingWindowSize                     int // int for COUNT_BASED, size seconds for TIME_BASED
+	SlidingWindowSize                     int           // int for COUNT_BASED,
+	SlidingWindowTime                     time.Duration //time window for TIME_BASED
 	SlidingWindowType                     SlidingWindowType
 	SlowCallDurationThreshold             time.Duration
 	SlowCallRateThreshold                 float64
